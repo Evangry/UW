@@ -55,6 +55,7 @@ int challenge_remaining;
 int challenge_number;
 unsigned long challenge_deadline;
 String big_message;
+bool inverted;
 
 void setup() {
   Serial.begin(9600);
@@ -86,6 +87,7 @@ void setup() {
   challenge_number = 0;
   challenge_deadline = millis();
   big_message = "Rome wasn't built in a day.";
+  inverted = false;
 }
 
 void loop() {
@@ -129,6 +131,7 @@ void loop() {
   if (millis() > oled_millis) {
 
     display.clearDisplay();
+    display.invertDisplay(inverted);
     if (big_message.length() > 0){
       display.setCursor(0, 0);
       display.setTextSize(2);
@@ -246,6 +249,7 @@ float timeTaken() {
 
 void onStep() {
   total_steps ++;
+  inverted = !inverted;
   if (challenge_remaining > 0) {
     challenge_remaining --;
     if (challenge_remaining == 0 && millis() <= challenge_deadline) {
