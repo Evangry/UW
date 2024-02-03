@@ -20,10 +20,14 @@ Adafruit_LIS3DH lis = Adafruit_LIS3DH();
 #define OLED_ADDRESS 0x3D
 Adafruit_SSD1306 display(128, 64, &Wire, -1);
 
-const int BATTERY_PIN =35;
+const int BATTERY_PIN=35;
 const float BATTERY_FULLISH = 4.0;
 const float BATTERY_EMPTYISH = 3.5;
-const int ACCEL_TIMER_MS = 20;
+const int ACCEL_TIMER_MS = 150;
+const int SMOOTH_NUMBER = 3;
+const int PEAK_LOOKBACK = 5;
+const int MAGNITUDE_QUALIFIER = 800;
+
 const int OLED_TIMER_MS = 250;
 const int BUTTON_PIN = A3;
 const int DEBOUNCE_MS = 30;
@@ -56,6 +60,17 @@ int challenge_number;
 unsigned long challenge_deadline;
 String big_message;
 bool inverted;
+float last_x_magnitudes[SMOOTH_NUMBER] = {0};
+float last_y_magnitudes[SMOOTH_NUMBER] = {0};
+float last_z_magnitudes[SMOOTH_NUMBER] = {0};
+int last_reading_pointer;
+
+int last_readings_magnitudes[PEAK_LOOKBACK] = {0};
+int last_reading_mag_pointer;
+int mag_dir;
+
+bool recording;
+
 
 void setup() {
   Serial.begin(9600);
@@ -88,6 +103,11 @@ void setup() {
   challenge_deadline = millis();
   big_message = "Rome wasn't built in a day.";
   inverted = false;
+  last_reading_pointer = 0;
+  last_reading_mag_pointer = 0;
+  mag_dir = 0;
+
+  recording = false;
 }
 
 void loop() {
@@ -96,6 +116,7 @@ void loop() {
     if (button_value != saved_button_value) {
       saved_button_value = button_value;
       if (button_value == 1) {
+        recording = true;
         if (big_message.length() > 0) {
           big_message = "";
         }
@@ -113,20 +134,8 @@ void loop() {
       button_read_millis = millis() + DEBOUNCE_MS;
     }
   }
-  if (millis() > accel_millis) {
-    sensors_event_t event;
-    lis.getEvent(&event);
-    
-    x_acc = event.acceleration.x;
-    y_acc = event.acceleration.y;
-    z_acc = event.acceleration.z;
-    accel_millis += ACCEL_TIMER_MS;
-    // Serial.print("x_acc:");
-    // Serial.print(x_acc);
-    // Serial.print(",y_acc:");
-    // Serial.print(y_acc);
-    // Serial.print(",z_acc:");
-    // Serial.println(z_acc);
+  if (millis() > accel_millis && recording) {
+    onRead();
   }
   if (millis() > oled_millis) {
 
@@ -247,9 +256,66 @@ float timeTaken() {
   }
 }
 
+float average(float readings[], int size) {
+    float sum = 0;
+    for (int i = 0; i < size; i++) {
+      sum += readings[i];
+    }
+    return sum / size;
+}
+
+bool peakDetect() {
+  int after = last_reading_mag_pointer;
+  int before = (last_reading_mag_pointer + 1) % PEAK_LOOKBACK;
+  int present = (last_reading_mag_pointer + 1 + PEAK_LOOKBACK / 2) % PEAK_LOOKBACK;
+  if (last_readings_magnitudes[after] < last_readings_magnitudes[present] - MAGNITUDE_QUALIFIER &&
+        last_readings_magnitudes[before] < last_readings_magnitudes[present] - MAGNITUDE_QUALIFIER) {
+    before = (before + 1) % PEAK_LOOKBACK;
+    after = (after + PEAK_LOOKBACK - 1) % PEAK_LOOKBACK;
+    while (last_readings_magnitudes[after] < last_readings_magnitudes[present] &&
+        last_readings_magnitudes[before] < last_readings_magnitudes[present]) {
+      before = (before + 1) % PEAK_LOOKBACK;
+      after = (after + PEAK_LOOKBACK - 1) % PEAK_LOOKBACK;
+    }
+    return before == after;
+  }
+  return false;
+}
+
+void onRead() {
+  sensors_event_t event;
+  lis.getEvent(&event);
+  last_x_magnitudes[last_reading_pointer] = event.acceleration.x;
+  last_y_magnitudes[last_reading_pointer] = event.acceleration.y;
+  last_z_magnitudes[last_reading_pointer] = event.acceleration.z;
+  last_reading_pointer = (last_reading_pointer + 1) % SMOOTH_NUMBER;
+
+  x_acc = (int) 10 * average(last_x_magnitudes, SMOOTH_NUMBER);
+  y_acc = (int) 10 * average(last_y_magnitudes, SMOOTH_NUMBER);
+  z_acc = (int) 10 * average(last_z_magnitudes, SMOOTH_NUMBER);
+
+  //didn't bother taking the square root.
+  last_readings_magnitudes[last_reading_mag_pointer] = x_acc * x_acc + y_acc * y_acc + z_acc * z_acc;
+  if (peakDetect()) {
+    onStep();
+  }
+  last_reading_mag_pointer = (last_reading_mag_pointer + 1) % PEAK_LOOKBACK;
+  //Serial.print("ms:");
+  //Serial.print(millis());
+  Serial.print(", x:");
+  Serial.print(x_acc);
+  Serial.print(", y:");
+  Serial.print(y_acc);
+  Serial.print(", z:");
+  Serial.print(z_acc);
+  Serial.print(", smooth-mag-squared:");
+  Serial.println(last_readings_magnitudes[last_reading_mag_pointer]);
+  accel_millis += ACCEL_TIMER_MS;
+}
+
 void onStep() {
   total_steps ++;
-  inverted = !inverted;
+  inverted = (total_steps % 5 == 0);
   if (challenge_remaining > 0) {
     challenge_remaining --;
     if (challenge_remaining == 0 && millis() <= challenge_deadline) {
